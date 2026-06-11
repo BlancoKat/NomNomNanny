@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+/build
+/dist
+/.svelte-kit
+/target
+/pkg
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+*.log
+*.swp
+
+# Vite / SvelteKit temp
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Tauri
+.tauri/
