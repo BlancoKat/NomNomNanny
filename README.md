@@ -20,7 +20,7 @@ Built with **Tauri 2 + Svelte 5 + Tailwind + Rust + SQLite + USDA FoodData Centr
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 20 or newer
+- [Node.js](https://nodejs.org/) 22 or newer
 - [Rust](https://www.rust-lang.org/tools/install) (stable)
 - On Linux: additional system dependencies for Tauri (see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/))
 
