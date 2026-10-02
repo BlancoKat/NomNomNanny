@@ -3,11 +3,12 @@ name: Build
 on:
   push:
     branches: [ main, master ]
-    tags:
-      - 'v*'
   pull_request:
     branches: [ main, master ]
 
+# Publish a real release only when code lands on the default branch.
+# Do not tag that release with the branch name. A tag named "main" collides
+# with the branch, so GitHub leaves an untagged draft whose download URLs 404.
 jobs:
   build-tauri:
     permissions:
@@ -53,18 +54,45 @@ jobs:
             wget \
             file \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            xvfb
 
       - name: install frontend dependencies
         run: npm install
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: build installers
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: verify Linux deb
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          deb=$(find src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          test -n "$deb"
+          ./scripts/verify-linux-deb.sh --launch "$deb"
+
+      - name: publish GitHub release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'NomNom Nanny ${{ github.ref_name }}'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
+          tagName: v__VERSION__
+          releaseName: 'NomNom Nanny v__VERSION__'
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+          releaseBody: |
+            Desktop installers for this version. Download the asset that matches your system.
+
+            Linux (Debian, Ubuntu, and derivatives): download the `.deb` and install it with apt so WebKitGTK is pulled in:
+
+            ```
+            sudo apt update
+            sudo apt install ./nomnom-nanny_*_amd64.deb
+            ```
+
+            Do not install that package with `dpkg -i` alone. AppImage builds need to be marked executable (`chmod +x`). If the AppImage reports that FUSE cannot mount it, run `./NomNomNanny.AppImage --appimage-extract-and-run`.
+
+            From a git checkout you can also run `./scripts/install-linux.sh`.
+
+            Windows: run the `-setup.exe`. macOS: open the `.dmg` (Apple Silicon). If Gatekeeper blocks the app, right-click it and choose Open.

@@ -18,7 +18,30 @@ Built with **Tauri 2 + Svelte 5 + Tailwind + Rust + SQLite + USDA FoodData Centr
 
 ## Getting Started
 
-### Prerequisites
+### Install a release
+
+Public installers are attached to the [GitHub release](https://github.com/BlancoKat/NomNomNanny/releases/latest) whose tag is `v` plus the app version (for example `v0.1.0`). Download the asset for your system from that page.
+
+Linux packages need WebKitGTK 4.1 at runtime. Install the `.deb` with apt so that library is pulled in automatically:
+
+```bash
+sudo apt update
+sudo apt install ./nomnom-nanny_*_amd64.deb
+```
+
+`dpkg -i` alone does not install those libraries, and the app then fails to start. On Fedora and openSUSE, install the `.rpm` with `dnf` or `zypper`. On Arch and Manjaro, use the AppImage (or build from source). Mark an AppImage executable with `chmod +x`. If it exits saying FUSE cannot mount it, start it with `--appimage-extract-and-run`.
+
+From a clone of this repo, the same steps are wrapped up as:
+
+```bash
+./scripts/install-linux.sh
+```
+
+Pass a downloaded `.deb`, `.rpm`, or `.AppImage` if you already have one. The script installs WebKitGTK when it is missing, and falls back to extract-and-run when FUSE is unavailable.
+
+Windows: run `nomnom-nanny_*_x64-setup.exe`. macOS: open the Apple Silicon `.dmg`. If Gatekeeper blocks the app, right-click it and choose Open.
+
+### Prerequisites for a source build
 
 - [Node.js](https://nodejs.org/) 22 or newer
 - [Rust](https://www.rust-lang.org/tools/install) (stable)
@@ -46,9 +69,13 @@ The first run will take a few minutes while the Rust backend compiles.
 npm run tauri build
 ```
 
-The resulting installers will be in `src-tauri/target/release/bundle/`.
+The resulting installers will be in `src-tauri/target/release/bundle/`. On Linux, install the freshly built package with:
 
-Pre-built binaries will be provided on GitHub Releases (https://github.com/blancokat/nomnomnanny/releases) once available.
+```bash
+./scripts/install-linux.sh
+```
+
+Pushes to `main` publish those installers to GitHub Releases under the `v<version>` tag. Download links on a draft or on a release tagged `main` do not work for a normal browser session.
 
 ### First Run
 
