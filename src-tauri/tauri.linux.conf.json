@@ -1,0 +1,16 @@
+{
+  "productName": "nomnom-nanny",
+  "bundle": {
+    "linux": {
+      "deb": {
+        "desktopTemplate": "nomnom-nanny.desktop",
+        "conflicts": ["nom-nom-nanny"],
+        "replaces": ["nom-nom-nanny"]
+      },
+      "rpm": {
+        "desktopTemplate": "nomnom-nanny.desktop",
+        "obsoletes": ["nom-nom-nanny"]
+      }
+    }
+  }
+}
