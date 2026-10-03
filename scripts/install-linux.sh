@@ -3,8 +3,10 @@
 #
 # Prefers a native package (deb on apt, rpm on dnf/zypper). Arch and other
 # distros get the AppImage. Runtime libraries are installed first so the app
-# does not fail with a missing WebKitGTK loader. AppImages that cannot mount
-# FUSE are launched with --appimage-extract-and-run.
+# does not fail with a missing WebKitGTK loader. An AppImage is repacked so it
+# does not shadow the host Wayland client (that abort leaves a window with no
+# renderer on current Mesa). AppImages that cannot mount FUSE are launched
+# with --appimage-extract-and-run.
 #
 # Usage:
 #   ./scripts/install-linux.sh [options] [package.deb|package.rpm|package.AppImage]
@@ -224,6 +226,13 @@ install_appimage() {
   local dest="$bin_dir/NomNomNanny.AppImage"
   cp "$src" "$dest"
   chmod +x "$dest"
+  local repair
+  repair=$(cd "$(dirname "$0")" && pwd)/repair-linux-appimage.sh
+  if [[ ! -x "$repair" ]]; then
+    echo "missing $repair; the AppImage would shadow host libwayland-client" >&2
+    exit 1
+  fi
+  "$repair" --in-place "$dest"
 
   local mode="direct"
   local probe

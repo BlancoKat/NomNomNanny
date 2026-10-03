@@ -1,6 +1,6 @@
 [package]
 name = "nomnom-nanny"
-version = "0.1.0"
+version = "0.1.1"
 description = "NomNom Nanny — Daily calorie, nutrient & hydration tracker"
 authors = ["NomNom Nanny contributors"]
 edition = "2021"
