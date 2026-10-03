@@ -20,7 +20,7 @@ Built with **Tauri 2 + Svelte 5 + Tailwind + Rust + SQLite + USDA FoodData Centr
 
 ### Install a release
 
-Public installers are attached to the [GitHub release](https://github.com/BlancoKat/NomNomNanny/releases/latest) whose tag is `v` plus the app version (for example `v0.1.0`). Download the asset for your system from that page.
+Public installers are attached to the [GitHub release](https://github.com/BlancoKat/NomNomNanny/releases/latest) whose tag is `v` plus the app version (for example `v0.1.1`). Download the asset for your system from that page.
 
 Linux packages need WebKitGTK 4.1 at runtime. Install the `.deb` with apt so that library is pulled in automatically:
 
@@ -29,7 +29,42 @@ sudo apt update
 sudo apt install ./nomnom-nanny_*_amd64.deb
 ```
 
-`dpkg -i` alone does not install those libraries, and the app then fails to start. On Fedora and openSUSE, install the `.rpm` with `dnf` or `zypper`. On Arch and Manjaro, use the AppImage (or build from source). Mark an AppImage executable with `chmod +x`. If it exits saying FUSE cannot mount it, start it with `--appimage-extract-and-run`.
+`dpkg -i` alone does not install those libraries, and the app then fails to start. On Fedora and openSUSE, install the `.rpm` with `dnf` or `zypper`. On Arch, Omarchy, and Manjaro, use the AppImage (or build from source). Mark an AppImage executable with `chmod +x`. If it exits saying FUSE cannot mount it, start it with `--appimage-extract-and-run`.
+
+The AppImage ships its own WebKitGTK, built on Ubuntu 22.04. It must use the host's Wayland client, EGL, and Mesa rather than copies from that build machine. A build that still carries `libwayland-client.so.0` aborts the web process on Mesa 26 (Arch and Omarchy included): the window stays open, `WebKitWebProcess` dies, and the page never paints. `WebKitNetworkProcess` is a different process and can keep running. From a terminal the abort looks like:
+
+```text
+Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
+```
+
+Launches from the app menu hide that line because stderr is not a terminal. The AppImage appends it to `~/.local/state/nomnom-nanny/appimage.log`.
+
+`./scripts/install-linux.sh` repacks an AppImage before it installs it, including an older download such as v0.1.0. A source build (`npm run tauri dev`) uses the system WebKit and is unaffected.
+
+### Check an AppImage on Wayland
+
+On the machine where it failed (Wayland session, not only an Ubuntu X11 VM):
+
+```bash
+echo "session=$XDG_SESSION_TYPE wayland=${WAYLAND_DISPLAY:-unset}"
+chmod +x ./nomnom-nanny_*_amd64.AppImage
+./nomnom-nanny_*_amd64.AppImage
+```
+
+Leave it in the foreground for a few seconds. The shell should stay occupied and the window should show the tracker, not an empty GTK frame. In another terminal:
+
+```bash
+pgrep -a WebKitWebProcess
+```
+
+That process should still be alive. Then confirm it loaded the host Wayland client rather than the mounted AppImage copy (`/tmp/.mount_*`):
+
+```bash
+pid=$(pgrep -n WebKitWebProcess)
+grep -F libwayland-client /proc/"$pid"/maps
+```
+
+The path should be under `/usr/lib` or `/lib`, not inside the AppImage mount. Quit the app and, if the window was blank, read `~/.local/state/nomnom-nanny/appimage.log`. A dev build on the same machine (`npm run tauri dev`) is the comparison: it uses system WebKitGTK and does not set `GDK_BACKEND=x11`.
 
 From a clone of this repo, the same steps are wrapped up as:
 

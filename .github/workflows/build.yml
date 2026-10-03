@@ -63,6 +63,15 @@ jobs:
       - name: build installers
         run: npm run tauri build -- ${{ matrix.args }}
 
+      - name: repair and verify Linux AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          appimage=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)
+          test -n "$appimage"
+          ./scripts/repair-linux-appimage.sh --in-place "$appimage"
+          sudo apt-get install -y xvfb libegl1
+          ./scripts/verify-linux-appimage.sh --launch "$appimage"
+
       - name: verify Linux deb
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -91,7 +100,7 @@ jobs:
             sudo apt install ./nomnom-nanny_*_amd64.deb
             ```
 
-            Do not install that package with `dpkg -i` alone. AppImage builds need to be marked executable (`chmod +x`). If the AppImage reports that FUSE cannot mount it, run `./NomNomNanny.AppImage --appimage-extract-and-run`.
+            Do not install that package with `dpkg -i` alone. On Arch and other distributions without a `.deb` or `.rpm`, use the AppImage (`chmod +x`). It must not bundle `libwayland-client`: host Mesa 26 aborts WebKit if the Ubuntu copy is loaded first. If FUSE cannot mount it, run `./nomnom-nanny_*_amd64.AppImage --appimage-extract-and-run`. A blank window with the process still running is a dead web renderer; the EGL abort is written to `~/.local/state/nomnom-nanny/appimage.log` when stderr is not a terminal.
 
             From a git checkout you can also run `./scripts/install-linux.sh`.
 
