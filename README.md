@@ -1,6 +1,6 @@
 # NomNom Nanny
 
-A beautiful, private, cross-platform desktop app for tracking daily calories, macronutrients (protein, fat, carbs), dietary fiber, and hydration.
+A beautiful, private app for tracking daily calories, macronutrients (protein, fat, carbs), dietary fiber, and hydration. It runs on the desktop and, as a debug build, on Android. iOS is not part of this change.
 
 Built with **Tauri 2 + Svelte 5 + Tailwind + Rust + SQLite + USDA FoodData Central API**.
 
@@ -14,7 +14,8 @@ Built with **Tauri 2 + Svelte 5 + Tailwind + Rust + SQLite + USDA FoodData Centr
 - 7-day and 30-day rolling averages
 - View and edit history for past days
 - 100% local data (SQLite) — works great offline after the first food lookups
-- No accounts, no telemetry, no cloud sync required
+- No accounts, no telemetry, no cloud sync. Copy the diary to another device by exporting a file and importing it there
+- Each device keeps its own database. A phone does not see the Linux database until you import a diary file
 
 ## Getting Started
 
@@ -93,6 +94,46 @@ npm run tauri dev
 
 The first run will take a few minutes while the Rust backend compiles.
 
+### Android debug build
+
+iOS is not part of this change. GitHub Actions does not build or publish Android.
+
+The phone keeps its own SQLite file under the app's private storage. USDA search calls `https://api.nal.usda.gov` from the app, so the Android manifest allows network access. The API key stays in the on-device settings store and falls back to `DEMO_KEY` when the field is empty.
+
+Install [Android Studio](https://developer.android.com/studio) (SDK Platform, SDK Platform-Tools, SDK Build-Tools, SDK Command-line Tools, and NDK Side by side), then point `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME` at them. The exact setup is the [Tauri Android prerequisites](https://v2.tauri.app/start/prerequisites/). From this repo:
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+npm install
+npm run tauri android build -- --debug --apk --target aarch64
+```
+
+That produces a debug APK signed with the Android debug keystore Gradle creates automatically. It is not a Play Store release, and this repo does not add a release keystore. `--target aarch64` is the current phone ABI. Omit `--target` to put every ABI in one APK.
+
+The arm64 command writes:
+
+```text
+src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
+The folder is named `universal` even when the APK contains only `arm64-v8a`. If the path differs, list what was built:
+
+```bash
+find src-tauri/gen/android/app/build/outputs/apk -name '*.apk'
+```
+
+Sideload it either way:
+
+1. USB. On the phone, turn on Developer options and USB debugging. Then, with [platform-tools](https://developer.android.com/tools/releases/platform-tools) on the computer:
+
+   ```bash
+   adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+   ```
+
+2. A file you can open on the phone. Copy the APK with a USB file transfer, or put it in Drive, email, or any folder the phone can open. Tap the APK. When Android asks, allow that app to install unknown apps. This is a debug build, so Play Protect may warn that it is not from the Play Store.
+
+`npm run tauri android dev` runs it on a connected phone or emulator with the dev server. The desktop `npm run tauri dev` command is unchanged.
+
 > **Note**: Make sure `cargo` is in your `PATH`. On some systems you may need to run:
 > ```bash
 > source "$HOME/.cargo/env" && npm run tauri dev
@@ -119,6 +160,14 @@ Pushes to `main` publish those installers to GitHub Releases under the `v<versio
 3. (Recommended) Get a free USDA API key at https://fdc.nal.usda.gov/api-key-signup and enter it in Settings. This enables the real food search.
 4. Start logging! You can use the USDA search for real foods or Manual Entry for homemade/custom items.
 
+## Moving the diary between devices
+
+Goals, log entries, and custom foods can move as one JSON file named `nomnom-diary.json`. The USDA response cache is left out (search fills it again). The USDA API key is not in the file.
+
+On either Android or the desktop app, open **Goals** and use **Export diary** or **Import diary**. Export uses the system save dialog (on Android, the document picker, so you can put the file in Downloads, Drive, or another app). Import uses the system open dialog. Before anything is replaced, the app shows what is on the device and what is in the file. Nothing is deleted until you choose **Replace diary on this device**. The two copies are not merged.
+
+The file is version 1 JSON (`"format": "nomnom-nanny-diary"`). A later app can still read it after a database migration because import writes through the current tables instead of swapping the live SQLite file.
+
 ## Custom Foods
 
 You can save homemade recipes or frequently eaten items as "My Foods". These are stored with nutrients per 100g so you can log any quantity and have the app calculate the values for you. You can also override nutrients on a per-entry basis.
@@ -126,6 +175,7 @@ You can save homemade recipes or frequently eaten items as "My Foods". These are
 ## Tech
 
 - **Desktop runtime**: Tauri 2 (small native installers, ~10-20 MB)
+- **Android**: Tauri 2 debug APK. Not built by the desktop release workflow. iOS is not part of this change.
 - **Frontend**: Svelte 5 (runes) + Tailwind
 - **Backend**: Rust + SQLite
 - **Food data**: USDA FoodData Central (user-provided free API key)
