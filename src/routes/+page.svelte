@@ -1,10 +1,13 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import { Store } from '@tauri-apps/plugin-store';
-  import { Apple, Droplet, Plus, Trash2, Calendar, History, Target, Search, X } from 'lucide-svelte';
+  import { Apple, Droplet, Plus, Trash2, Calendar, History, Target, Search } from 'lucide-svelte';
   import MacroRing from '$lib/components/MacroRing.svelte';
   import DateNavigator from '$lib/components/DateNavigator.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import DiaryTransfer from '$lib/components/DiaryTransfer.svelte';
+  import { localDateString } from '$lib/localDate';
 
   interface Goal { calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; hydration_oz: number; }
   interface IntakeEntry { id: number; log_date: string; description: string; amount: number; unit: string; calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; fluid_oz: number; meal?: string; source: string; }
@@ -15,7 +18,7 @@
   interface MacroNutrients { kcal: number; protein: number; fat: number; carbs: number; fiber: number; }
   interface CachedFood { fdc_id: number; description: string; nutrients_per_100g: MacroNutrients; portions: FoodPortion[]; }
 
-  let today = new Date().toISOString().slice(0, 10);
+  let today = localDateString();
   let currentDate = $state(today);
   let activeTab = $state<'today' | 'history' | 'goals'>('today');
 
@@ -242,10 +245,27 @@
     finally { isLoading = false; }
   }
 
-  async function logWater() {
-    if (waterOz <= 0) return;
-    await invoke('log_intake_cmd', { input: { log_date: currentDate, description: 'Water', amount: waterOz, unit: 'fl oz', grams: null, calories_kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0, fiber_g: 0, fluid_oz: waterOz, meal: null, source: 'water' } });
+  async function logWaterAmount(ounces: number) {
+    if (ounces <= 0) return;
+    await invoke('log_intake_cmd', { input: { log_date: currentDate, description: 'Water', amount: ounces, unit: 'fl oz', grams: null, calories_kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0, fiber_g: 0, fluid_oz: ounces, meal: null, source: 'water' } });
     await loadAll();
+  }
+
+  async function logWater() {
+    await logWaterAmount(waterOz);
+  }
+
+  async function openUsdaSignup() {
+    try {
+      await openUrl('https://fdc.nal.usda.gov/api-key-signup');
+    } catch {
+      status = 'Could not open the USDA signup page';
+    }
+  }
+
+  async function refreshAfterImport() {
+    await loadAll();
+    await loadCustomFoods();
   }
 
   async function logCustomEntry() {
@@ -431,9 +451,9 @@
 
 <svelte:window onkeydown={handleKey} />
 
-<div class="flex h-screen bg-slate-50 overflow-hidden">
-  <!-- Sidebar -->
-  <div class="w-60 bg-white border-r flex flex-col shrink-0">
+<div class="app-shell flex h-dvh flex-col md:flex-row bg-slate-50 overflow-hidden">
+  <!-- Sidebar. Hidden on a phone; the bottom nav replaces it. -->
+  <div class="hidden md:flex w-60 bg-white border-r flex-col shrink-0">
     <div class="px-5 pt-6 pb-5 flex items-center gap-3 border-b">
       <div class="flex -space-x-1">
         <div class="w-8 h-8 bg-emerald-600 rounded-2xl flex items-center justify-center ring-2 ring-white"><Apple class="w-4.5 h-4.5 text-white"/></div>
@@ -446,27 +466,30 @@
     </div>
 
     <nav class="px-3 py-4 text-sm">
-      <button onclick={() => activeTab='today'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
-      <button onclick={() => activeTab='history'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='history' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><History class="w-4 h-4"/> History</button>
-      <button onclick={() => activeTab='goals'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl {activeTab==='goals' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Target class="w-4 h-4"/> Goals</button>
+      <button type="button" onclick={() => activeTab='today'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
+      <button type="button" onclick={() => activeTab='history'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='history' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><History class="w-4 h-4"/> History</button>
+      <button type="button" onclick={() => activeTab='goals'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl {activeTab==='goals' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Target class="w-4 h-4"/> Goals</button>
     </nav>
 
-    <div class="mt-auto p-4 border-t text-[11px] text-slate-400">All data local • Press / for water</div>
+    <div class="mt-auto p-4 border-t text-[11px] text-slate-400 space-y-2">
+      <div>All data stays on this device. Press / to focus water.</div>
+      <button type="button" onclick={() => activeTab='goals'} class="text-emerald-700 underline">Export or import diary</button>
+    </div>
   </div>
 
   <!-- Main -->
-  <div class="flex-1 flex flex-col overflow-hidden">
-    <div class="h-14 border-b bg-white flex items-center px-6 justify-between shrink-0">
-      <div>
+  <div class="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
+    <div class="min-h-14 border-b bg-white flex flex-col gap-1 sm:flex-row sm:items-center px-4 sm:px-6 py-2 justify-between shrink-0">
+      <div class="min-w-0">
         {#if activeTab === 'today'}<DateNavigator date={currentDate} onChange={changeDate} />{/if}
-        {#if activeTab === 'history'}<div class="font-semibold text-xl">History (last 14 days)</div>{/if}
-        {#if activeTab === 'goals'}<div class="font-semibold text-xl">Your Daily Goals</div>{/if}
+        {#if activeTab === 'history'}<div class="font-semibold text-lg sm:text-xl">History (last 14 days)</div>{/if}
+        {#if activeTab === 'goals'}<div class="font-semibold text-lg sm:text-xl">Your Daily Goals</div>{/if}
       </div>
-      <div class="text-xs text-slate-400">{status || (isLoading ? 'Loading…' : '')}</div>
+      <div class="text-xs text-slate-400 truncate">{status || (isLoading ? 'Loading…' : '')}</div>
     </div>
 
     {#if activeTab === 'today'}
-      <div class="flex-1 overflow-auto p-6 space-y-6">
+      <div class="flex-1 min-h-0 overflow-auto p-4 sm:p-6 space-y-6">
         {#if progress && goals}
           <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <MacroRing label="Calories" current={progress.kcal.cur} goal={progress.kcal.goal} unit="kcal" color={progress.kcal.color}/>
@@ -480,20 +503,27 @@
 
         <div class="bg-white border rounded-3xl p-5">
           <div class="text-sm font-semibold text-slate-600 mb-3">Quick add</div>
-          <div class="flex flex-wrap gap-3">
-            <div class="flex items-center bg-sky-50 border border-sky-100 rounded-2xl pl-4 pr-2 py-1.5 gap-2">
-              <Droplet class="w-4 h-4 text-sky-500"/>
-              <input id="water-input" type="number" bind:value={waterOz} class="w-14 font-mono text-lg bg-transparent border-0 p-0"/>
-              <span class="text-sm text-sky-600 pr-1">fl oz water</span>
-              <button onclick={logWater} class="px-5 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium rounded-2xl flex items-center gap-1"><Plus class="w-3.5 h-3.5"/>Log</button>
+          <div class="flex flex-col sm:flex-row sm:flex-wrap gap-3">
+            <div class="flex flex-col gap-2 w-full sm:w-auto">
+              <div class="flex flex-wrap gap-2">
+                {#each [8, 12, 16, 20] as oz}
+                  <button type="button" onclick={() => logWaterAmount(oz)} class="min-h-11 px-3 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium rounded-2xl">Log {oz} oz</button>
+                {/each}
+              </div>
+              <div class="flex items-center bg-sky-50 border border-sky-100 rounded-2xl pl-4 pr-2 py-1.5 gap-2">
+                <Droplet class="w-4 h-4 text-sky-500 shrink-0"/>
+                <input id="water-input" type="number" inputmode="decimal" bind:value={waterOz} class="w-16 font-mono text-lg bg-transparent border-0 p-0"/>
+                <span class="text-sm text-sky-600 pr-1">fl oz</span>
+                <button type="button" onclick={logWater} class="min-h-11 px-5 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium rounded-2xl flex items-center gap-1"><Plus class="w-3.5 h-3.5"/>Log</button>
+              </div>
             </div>
 
-            <button onclick={() => showCustomForm = !showCustomForm} class="px-5 py-2.5 border rounded-2xl text-sm font-medium flex items-center gap-2"><Plus class="w-4 h-4"/>Manual entry</button>
-            <button onclick={openFoodSearch} class="px-5 py-2.5 border border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-2xl text-sm font-medium flex items-center gap-2"><Search class="w-4 h-4"/>Search real foods (USDA)</button>
-            <button onclick={() => { showMyFoodsModal = true; loadCustomFoods(); }} class="px-5 py-2.5 border border-amber-200 text-amber-700 hover:bg-amber-50 rounded-2xl text-sm font-medium flex items-center gap-2">
+            <button type="button" onclick={() => showCustomForm = !showCustomForm} class="min-h-11 w-full sm:w-auto px-5 py-2.5 border rounded-2xl text-sm font-medium flex items-center justify-center gap-2"><Plus class="w-4 h-4"/>Manual entry</button>
+            <button type="button" onclick={openFoodSearch} class="min-h-11 w-full sm:w-auto px-5 py-2.5 border border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-2xl text-sm font-medium flex items-center justify-center gap-2"><Search class="w-4 h-4"/>Search real foods (USDA)</button>
+            <button type="button" onclick={() => { showMyFoodsModal = true; loadCustomFoods(); }} class="min-h-11 w-full sm:w-auto px-5 py-2.5 border border-amber-200 text-amber-700 hover:bg-amber-50 rounded-2xl text-sm font-medium flex items-center justify-center gap-2">
               My Foods ({customFoods.length})
             </button>
-            <div class="text-[10px] text-slate-400 self-center ml-1">Tip: Use "Search real foods" for accurate data from the USDA database</div>
+            <div class="text-[10px] text-slate-400 self-center sm:ml-1">Tip: Use "Search real foods" for accurate data from the USDA database</div>
           </div>
 
           {#if showCustomForm}
@@ -536,10 +566,10 @@
                 </div>
 
                 <!-- Actions -->
-                <div class="md:col-span-6 flex gap-2 justify-end pt-1">
-                  <button onclick={() => showCustomForm=false} class="px-4 py-2 text-slate-600 hover:text-slate-800">Cancel</button>
-                  <button onclick={logCustomEntry} class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium">Add to log</button>
-                  <button onclick={saveCurrentAsCustomFood} class="px-4 py-2 border border-amber-300 text-amber-700 hover:bg-amber-50 rounded-xl text-sm">
+                <div class="md:col-span-6 flex flex-wrap gap-2 justify-end pt-1">
+                  <button type="button" onclick={() => showCustomForm=false} class="min-h-11 px-4 py-2 text-slate-600 hover:text-slate-800">Cancel</button>
+                  <button type="button" onclick={logCustomEntry} class="min-h-11 px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium">Add to log</button>
+                  <button type="button" onclick={saveCurrentAsCustomFood} class="min-h-11 px-4 py-2 border border-amber-300 text-amber-700 hover:bg-amber-50 rounded-xl text-sm">
                     Save as Custom Food
                   </button>
                 </div>
@@ -558,12 +588,12 @@
           {:else}
             <div class="divide-y text-sm">
               {#each entries as e (e.id)}
-                <div class="px-5 py-3 flex justify-between group hover:bg-slate-50">
-                  <div><span class="font-medium">{e.description}</span> <span class="text-slate-400">({e.amount} {e.unit})</span></div>
-                  <div class="flex items-center gap-4 text-xs tabular-nums">
+                <div class="px-4 sm:px-5 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between hover:bg-slate-50">
+                  <div class="min-w-0"><span class="font-medium break-words">{e.description}</span> <span class="text-slate-400">({e.amount} {e.unit})</span></div>
+                  <div class="flex items-center justify-between sm:justify-end gap-3 text-xs tabular-nums">
                     <span class="text-emerald-600">{e.calories_kcal.toFixed(0)} kcal</span>
                     <span class="text-sky-600">{e.fluid_oz.toFixed(1)} oz</span>
-                    <button onclick={() => deleteEntry(e.id)} class="opacity-0 group-hover:opacity-100 text-rose-500"><Trash2 class="w-4 h-4"/></button>
+                    <button type="button" onclick={() => deleteEntry(e.id)} class="min-w-11 min-h-11 inline-flex items-center justify-center text-rose-500 rounded-xl" aria-label="Delete {e.description}"><Trash2 class="w-4 h-4"/></button>
                   </div>
                 </div>
               {/each}
@@ -574,38 +604,59 @@
     {/if}
 
     {#if activeTab === 'history'}
-      <div class="p-6 overflow-auto">
-        <div class="bg-white border rounded-3xl overflow-hidden">
-          <table class="w-full text-sm">
-            <thead class="bg-slate-50 text-slate-500"><tr><th class="text-left px-5 py-3">Date</th><th>Calories</th><th>Protein</th><th>Water</th><th>Items</th></tr></thead>
-            <tbody class="divide-y">
-              {#each history as d}<tr class="hover:bg-emerald-50 cursor-pointer" onclick={()=>{currentDate=d.log_date; activeTab='today';}}>
-                <td class="px-5 py-3 font-medium">{d.log_date}</td>
-                <td class="text-center tabular-nums">{d.calories_kcal.toFixed(0)}</td>
-                <td class="text-center tabular-nums">{d.protein_g.toFixed(1)}g</td>
-                <td class="text-center text-sky-600 tabular-nums">{d.fluid_oz.toFixed(1)}oz</td>
-                <td class="text-center text-slate-400">{d.entry_count}</td>
-              </tr>{/each}
-            </tbody>
-          </table>
-        </div>
+      <div class="flex-1 min-h-0 p-4 sm:p-6 overflow-auto">
+        {#if history.length === 0}
+          <div class="p-8 text-center text-slate-400 text-sm">No days logged yet.</div>
+        {:else}
+          <div class="md:hidden space-y-2">
+            {#each history as d}
+              <button
+                type="button"
+                class="w-full text-left bg-white border rounded-2xl p-4 min-h-11"
+                onclick={() => { currentDate = d.log_date; activeTab = 'today'; }}
+              >
+                <div class="font-medium">{d.log_date}</div>
+                <div class="mt-1 text-sm text-slate-600 flex flex-wrap gap-x-3 gap-y-1">
+                  <span>{d.calories_kcal.toFixed(0)} kcal</span>
+                  <span>{d.protein_g.toFixed(1)} g protein</span>
+                  <span class="text-sky-600">{d.fluid_oz.toFixed(1)} oz water</span>
+                  <span class="text-slate-400">{d.entry_count} items</span>
+                </div>
+              </button>
+            {/each}
+          </div>
+          <div class="hidden md:block bg-white border rounded-3xl overflow-hidden">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50 text-slate-500"><tr><th class="text-left px-5 py-3">Date</th><th>Calories</th><th>Protein</th><th>Water</th><th>Items</th></tr></thead>
+              <tbody class="divide-y">
+                {#each history as d}<tr class="hover:bg-emerald-50 cursor-pointer" onclick={()=>{currentDate=d.log_date; activeTab='today';}}>
+                  <td class="px-5 py-3 font-medium">{d.log_date}</td>
+                  <td class="text-center tabular-nums">{d.calories_kcal.toFixed(0)}</td>
+                  <td class="text-center tabular-nums">{d.protein_g.toFixed(1)}g</td>
+                  <td class="text-center text-sky-600 tabular-nums">{d.fluid_oz.toFixed(1)}oz</td>
+                  <td class="text-center text-slate-400">{d.entry_count}</td>
+                </tr>{/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
       </div>
     {/if}
 
     {#if activeTab === 'goals'}
-      <div class="p-6 max-w-2xl space-y-6">
+      <div class="flex-1 min-h-0 p-4 sm:p-6 max-w-2xl space-y-6 overflow-auto">
         <!-- Daily Goals -->
         <div class="bg-white border rounded-3xl p-6">
           <div class="font-semibold mb-4">Edit daily targets</div>
           {#if goals}
-            <div class="grid grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 min-[480px]:grid-cols-2 gap-4">
               {#each [['Calories (kcal)', 'calories_kcal'], ['Protein (g)', 'protein_g'], ['Fat (g)', 'fat_g'], ['Carbs (g)', 'carbs_g'], ['Fiber (g)', 'fiber_g'], ['Water (fl oz)', 'hydration_oz']] as [label, key]}
                 <label class="block"><span class="text-xs text-slate-500">{label}</span>
                   <input type="number" bind:value={goals[key as keyof Goal]} class="mt-1 w-full border rounded-2xl px-4 py-2.5 text-lg"/>
                 </label>
               {/each}
             </div>
-            <button onclick={async ()=>{await invoke('update_goals_cmd',{goal:goals}); await loadAll(); status='Saved';}} class="mt-5 w-full py-3 bg-emerald-600 text-white rounded-2xl font-medium">Save Goals</button>
+            <button type="button" onclick={async ()=>{await invoke('update_goals_cmd',{goal:goals}); await loadAll(); status='Saved';}} class="mt-5 w-full min-h-11 py-3 bg-emerald-600 text-white rounded-2xl font-medium">Save Goals</button>
           {/if}
         </div>
 
@@ -613,33 +664,42 @@
         <div class="bg-white border rounded-3xl p-6">
           <div class="font-semibold mb-2">USDA FoodData Central API Key</div>
           <p class="text-xs text-slate-500 mb-3">
-            Required for the "Search real foods" feature. Get a free key at 
-            <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" class="text-emerald-600 underline">fdc.nal.usda.gov/api-key-signup</a>
+            Required for the "Search real foods" feature. Get a free key at
+            <button type="button" onclick={openUsdaSignup} class="text-emerald-600 underline">fdc.nal.usda.gov/api-key-signup</button>
           </p>
 
-          <div class="flex gap-2">
+          <div class="flex flex-col sm:flex-row gap-2">
             <input 
               type="password" 
               bind:value={apiKey} 
               placeholder="Paste your USDA API key here"
-              class="flex-1 border rounded-2xl px-4 py-2.5 text-sm font-mono"
+              class="flex-1 min-w-0 border rounded-2xl px-4 py-2.5 text-sm font-mono"
               onblur={saveApiKey}
             />
             <button 
+              type="button"
               onclick={saveApiKey}
-              class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-medium"
+              class="min-h-11 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-medium"
             >
               Save
             </button>
           </div>
 
           <div class="text-[10px] text-slate-400 mt-2">
-            Your key is stored securely on your device.
+            Your key stays in settings on this device. It is not copied when you export a diary.
           </div>
         </div>
+
+        <DiaryTransfer onImported={refreshAfterImport} />
       </div>
     {/if}
   </div>
+
+  <nav class="bottom-nav md:hidden shrink-0 border-t bg-white flex" aria-label="Sections">
+    <button type="button" onclick={() => activeTab='today'} class="flex-1 min-h-14 py-2 flex flex-col items-center justify-center gap-1 text-xs {activeTab==='today' ? 'text-emerald-700 font-medium' : 'text-slate-500'}"><Calendar class="w-5 h-5"/>Today</button>
+    <button type="button" onclick={() => activeTab='history'} class="flex-1 min-h-14 py-2 flex flex-col items-center justify-center gap-1 text-xs {activeTab==='history' ? 'text-emerald-700 font-medium' : 'text-slate-500'}"><History class="w-5 h-5"/>History</button>
+    <button type="button" onclick={() => activeTab='goals'} class="flex-1 min-h-14 py-2 flex flex-col items-center justify-center gap-1 text-xs {activeTab==='goals' ? 'text-emerald-700 font-medium' : 'text-slate-500'}"><Target class="w-5 h-5"/>Goals</button>
+  </nav>
 </div>
 
 <!-- Food Search Modal -->
@@ -663,12 +723,12 @@
           {searchError}
         </div>
       {:else if searchResults.length > 0}
-        <div class="text-xs text-slate-500 mb-1 px-1">Click a food to see nutrition info and choose quantity</div>
-        <div class="max-h-80 overflow-auto border rounded-2xl divide-y">
+        <div class="text-xs text-slate-500 mb-1 px-1">Choose a food to see nutrition info and quantity</div>
+        <div class="max-h-[40dvh] overflow-auto border rounded-2xl divide-y">
           {#each searchResults as h}
-            <button onclick={() => selectFood(h)} class="w-full text-left px-4 py-3 hover:bg-emerald-50 text-sm flex justify-between">
-              <span>{h.description}</span>
-              <span class="text-xs text-slate-400 self-center">{h.data_type}</span>
+            <button type="button" onclick={() => selectFood(h)} class="w-full text-left px-4 py-3 min-h-11 hover:bg-emerald-50 text-sm flex justify-between gap-3">
+              <span class="break-words">{h.description}</span>
+              <span class="text-xs text-slate-400 self-center shrink-0">{h.data_type}</span>
             </button>
           {/each}
         </div>
@@ -684,7 +744,7 @@
           {#each selectedFood.portions as p, i}
             <button 
               onclick={()=>{selectedPortionIndex=i; portionMultiplier=1;}} 
-              class="block w-full text-left px-3 py-1.5 my-0.5 rounded-xl text-sm {selectedPortionIndex===i ? 'bg-emerald-100 border border-emerald-300' : 'hover:bg-white border border-transparent'}">
+              class="block w-full text-left px-3 py-2 my-0.5 min-h-11 rounded-xl text-sm {selectedPortionIndex===i ? 'bg-emerald-100 border border-emerald-300' : 'hover:bg-white border border-transparent'}">
               {p.label}
             </button>
           {/each}
@@ -713,7 +773,7 @@
         {:else if previewNutrients}
           <div class="p-3 bg-white border rounded-2xl">
             <div class="text-xs text-slate-500 mb-1">Calculated for this quantity:</div>
-            <div class="grid grid-cols-5 gap-2 text-center text-sm">
+            <div class="grid grid-cols-3 sm:grid-cols-5 gap-2 text-center text-sm">
               <div><div class="font-semibold text-emerald-600">{previewNutrients.kcal.toFixed(0)}</div><div class="text-[10px]">kcal</div></div>
               <div><div class="font-semibold">{previewNutrients.protein.toFixed(1)}</div><div class="text-[10px]">protein</div></div>
               <div><div class="font-semibold">{previewNutrients.fat.toFixed(1)}</div><div class="text-[10px]">fat</div></div>
@@ -727,7 +787,7 @@
       <button 
         onclick={logSelectedFood} 
         disabled={logging}
-        class="mt-4 w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white rounded-2xl font-medium flex items-center justify-center gap-2"
+        class="mt-4 w-full min-h-11 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white rounded-2xl font-medium flex items-center justify-center gap-2"
       >
         {logging ? 'Logging...' : 'Log this amount'}
       </button>
@@ -737,30 +797,30 @@
 
 <!-- My Custom Foods Modal -->
 <Modal bind:open={showMyFoodsModal} onClose={() => showMyFoodsModal = false} title="My Custom Foods">
-  <div class="space-y-4 max-h-[70vh] overflow-auto">
+  <div class="space-y-4">
     {#if customFoods.length === 0}
       <p class="text-slate-500 text-sm">You haven't saved any custom foods yet. Use "Manual entry" and then save it from there.</p>
     {:else}
       {#each customFoods as food (food.id)}
         <div class="border rounded-2xl p-3">
           <!-- Header -->
-          <div class="flex justify-between items-start mb-2">
+          <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2 mb-2">
             <input 
               bind:value={food.name} 
-              class="font-medium border-b border-transparent focus:border-emerald-300 px-1 py-0.5 w-48"
+              class="font-medium border-b border-transparent focus:border-emerald-300 px-1 py-0.5 w-full sm:flex-1 min-w-0"
               onblur={() => updateCustomFood(food)}
             />
-            <div class="flex gap-2">
-              <button onclick={() => startLoggingFood(food)} 
-                      class="text-xs px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700">
+            <div class="flex flex-wrap gap-2">
+              <button type="button" onclick={() => startLoggingFood(food)} 
+                      class="min-h-11 text-xs px-3 py-1 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700">
                 Log this food
               </button>
-              <button onclick={() => deleteCustomFood(food.id)} class="text-xs px-2 py-1 text-rose-600 hover:bg-rose-50 rounded">Delete</button>
+              <button type="button" onclick={() => deleteCustomFood(food.id)} class="min-h-11 text-xs px-3 py-1 text-rose-600 hover:bg-rose-50 rounded-xl">Delete</button>
             </div>
           </div>
 
           <!-- Editable base per-100g values -->
-          <div class="grid grid-cols-5 gap-2 text-xs mb-3">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs mb-3">
             <div>
               <div class="text-[10px] text-slate-500">kcal /100g</div>
               <input type="number" bind:value={food.kcal_per_100g} step="0.1" 
@@ -798,16 +858,16 @@
             <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
               <div class="text-sm font-medium mb-2">Log {food.name}</div>
 
-              <div class="flex gap-3 items-end mb-3">
+              <div class="flex flex-wrap gap-3 items-end mb-3">
                 <div>
                   <div class="text-[10px] text-slate-500">Grams</div>
-                  <input type="number" bind:value={logGrams} step="1" class="w-24 border rounded px-2 py-1 text-sm" />
+                  <input type="number" inputmode="decimal" bind:value={logGrams} step="1" class="w-24 border rounded px-2 py-1 text-sm min-h-11" />
                 </div>
-                <button onclick={() => confirmLogFromMyFoods(food)} 
-                        class="px-4 py-1.5 bg-emerald-600 text-white text-sm rounded-xl">
+                <button type="button" onclick={() => confirmLogFromMyFoods(food)} 
+                        class="min-h-11 px-4 py-1.5 bg-emerald-600 text-white text-sm rounded-xl">
                   Log this
                 </button>
-                <button onclick={() => activeLogFoodId = null} class="px-3 py-1.5 text-sm">Cancel</button>
+                <button type="button" onclick={() => activeLogFoodId = null} class="min-h-11 px-3 py-1.5 text-sm">Cancel</button>
               </div>
 
               <div class="text-xs mb-2">
@@ -819,7 +879,7 @@
                 {#if !useNutrientOverride}
                   <div class="text-slate-500">Using saved per-100g values × {logGrams}g</div>
                 {:else}
-                  <div class="grid grid-cols-5 gap-1 text-[10px] mt-1">
+                  <div class="grid grid-cols-2 sm:grid-cols-5 gap-1 text-[10px] mt-1">
                     <div><span class="text-slate-500">kcal</span><br>
                       <input type="number" bind:value={overrideNutrients.kcal} step="0.1" class="w-full border text-xs px-1 py-0.5 rounded" /></div>
                     <div><span class="text-slate-500">protein</span><br>
@@ -835,13 +895,13 @@
               </div>
             </div>
           {:else}
-            <div class="flex gap-2">
-              <button onclick={() => startLoggingFood(food)} 
-                      class="text-xs px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700">
+            <div class="flex flex-wrap gap-2">
+              <button type="button" onclick={() => startLoggingFood(food)} 
+                      class="min-h-11 text-xs px-3 py-1 bg-amber-600 text-white rounded-xl hover:bg-amber-700">
                 Log with custom quantity + overrides
               </button>
-              <button onclick={() => logFromCustomFood(food, 100)} 
-                      class="text-xs px-3 py-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200">
+              <button type="button" onclick={() => logFromCustomFood(food, 100)} 
+                      class="min-h-11 text-xs px-3 py-1 bg-emerald-100 text-emerald-700 rounded-xl hover:bg-emerald-200">
                 Quick log 100g
               </button>
             </div>
@@ -865,17 +925,18 @@
         <div class="text-xs text-slate-600 mb-3">
           You entered totals for a certain amount. How many grams was that entry?
         </div>
-        <div class="flex gap-2 items-end">
+        <div class="flex flex-wrap gap-2 items-end">
           <div>
             <div class="text-[10px] text-slate-500">Grams this entry represented</div>
             <input 
               type="number" 
+              inputmode="decimal"
               bind:value={saveCustomGrams} 
-              class="w-28 border rounded-xl px-3 py-1.5 text-sm" 
+              class="w-28 border rounded-xl px-3 py-1.5 text-sm min-h-11" 
             />
           </div>
-          <button onclick={confirmSaveCurrentAsCustomFood} class="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm">Save</button>
-          <button onclick={() => showSaveCustomDialog = false} class="px-4 py-2 text-slate-600">Cancel</button>
+          <button type="button" onclick={confirmSaveCurrentAsCustomFood} class="min-h-11 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm">Save</button>
+          <button type="button" onclick={() => showSaveCustomDialog = false} class="min-h-11 px-4 py-2 text-slate-600">Cancel</button>
         </div>
         <div class="text-[10px] text-slate-500 mt-2">
           The app will convert your totals into per-100g values for future scaling.
