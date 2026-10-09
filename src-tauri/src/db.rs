@@ -132,6 +132,21 @@ fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         )?;
     }
 
+    // --- Migration 3: serving unit and optional density on custom foods ---
+    // Existing rows are gram foods (basis_unit 'g', density NULL = 1 g/mL).
+    if current_version < 3 {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE custom_foods ADD COLUMN basis_unit TEXT NOT NULL DEFAULT 'g';
+            ALTER TABLE custom_foods ADD COLUMN density_g_per_ml REAL;
+            "#,
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_migrations (version) VALUES (3)",
+            [],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -176,6 +191,31 @@ pub struct CustomFood {
     pub fat_per_100g: f64,
     pub carbs_per_100g: f64,
     pub fiber_per_100g: f64,
+    /// Unit the label was entered in: g, ml, oz, or fl oz. Older rows are g.
+    #[serde(default = "default_basis_unit")]
+    pub basis_unit: String,
+    /// Grams per mL. NULL means the default, 1 g/mL.
+    #[serde(default)]
+    pub density_g_per_ml: Option<f64>,
+}
+
+fn default_basis_unit() -> String {
+    "g".to_string()
+}
+
+/// Nutrients as printed on a label, for `amount` of `unit`.
+#[derive(Debug, Deserialize)]
+pub struct CustomFoodLabel {
+    pub name: String,
+    pub amount: f64,
+    pub unit: String,
+    #[serde(default)]
+    pub density_g_per_ml: Option<f64>,
+    pub kcal: f64,
+    pub protein: f64,
+    pub fat: f64,
+    pub carbs: f64,
+    pub fiber: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -568,7 +608,8 @@ pub fn get_cached_food(conn: &Connection, fdc_id: i64) -> Result<Option<serde_js
 
 pub fn get_custom_foods(conn: &Connection) -> Result<Vec<CustomFood>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, kcal_per_100g, protein_per_100g, fat_per_100g, carbs_per_100g, fiber_per_100g
+        "SELECT id, name, kcal_per_100g, protein_per_100g, fat_per_100g, carbs_per_100g, fiber_per_100g,
+                basis_unit, density_g_per_ml
          FROM custom_foods
          ORDER BY name COLLATE NOCASE ASC"
     )?;
@@ -583,6 +624,8 @@ pub fn get_custom_foods(conn: &Connection) -> Result<Vec<CustomFood>> {
                 fat_per_100g: row.get(4)?,
                 carbs_per_100g: row.get(5)?,
                 fiber_per_100g: row.get(6)?,
+                basis_unit: row.get(7)?,
+                density_g_per_ml: row.get(8)?,
             })
         })?
         .collect::<SqliteResult<Vec<_>>>()?;
@@ -593,8 +636,10 @@ pub fn save_custom_food(conn: &Connection, food: &CustomFood) -> Result<i64> {
     if food.id == 0 {
         // Insert new
         conn.execute(
-            "INSERT INTO custom_foods (name, kcal_per_100g, protein_per_100g, fat_per_100g, carbs_per_100g, fiber_per_100g)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO custom_foods (
+                name, kcal_per_100g, protein_per_100g, fat_per_100g, carbs_per_100g, fiber_per_100g,
+                basis_unit, density_g_per_ml
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 food.name,
                 food.kcal_per_100g,
@@ -602,6 +647,8 @@ pub fn save_custom_food(conn: &Connection, food: &CustomFood) -> Result<i64> {
                 food.fat_per_100g,
                 food.carbs_per_100g,
                 food.fiber_per_100g,
+                food.basis_unit,
+                food.density_g_per_ml,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -615,8 +662,10 @@ pub fn save_custom_food(conn: &Connection, food: &CustomFood) -> Result<i64> {
                 fat_per_100g = ?4,
                 carbs_per_100g = ?5,
                 fiber_per_100g = ?6,
+                basis_unit = ?7,
+                density_g_per_ml = ?8,
                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?7",
+             WHERE id = ?9",
             params![
                 food.name,
                 food.kcal_per_100g,
@@ -624,11 +673,51 @@ pub fn save_custom_food(conn: &Connection, food: &CustomFood) -> Result<i64> {
                 food.fat_per_100g,
                 food.carbs_per_100g,
                 food.fiber_per_100g,
+                food.basis_unit,
+                food.density_g_per_ml,
                 food.id,
             ],
         )?;
         Ok(food.id)
     }
+}
+
+pub fn save_custom_food_from_label(conn: &Connection, label: &CustomFoodLabel) -> Result<i64> {
+    let name = label.name.trim();
+    if name.is_empty() {
+        return Err(AppError::InvalidInput("Food name is required.".into()));
+    }
+    let unit = crate::units::parse_serving_unit(&label.unit)?;
+    let grams =
+        crate::units::grams_for_serving(label.amount, &label.unit, label.density_g_per_ml)?;
+    let per_100g = crate::units::per_100g_from_serving(
+        crate::units::MacroTotals {
+            kcal: label.kcal,
+            protein: label.protein,
+            fat: label.fat,
+            carbs: label.carbs,
+            fiber: label.fiber,
+        },
+        grams,
+    )?;
+    save_custom_food(
+        conn,
+        &CustomFood {
+            id: 0,
+            name: name.to_string(),
+            kcal_per_100g: per_100g.kcal,
+            protein_per_100g: per_100g.protein,
+            fat_per_100g: per_100g.fat,
+            carbs_per_100g: per_100g.carbs,
+            fiber_per_100g: per_100g.fiber,
+            basis_unit: unit.canonical().to_string(),
+            density_g_per_ml: if unit.is_volume() {
+                label.density_g_per_ml
+            } else {
+                None
+            },
+        },
+    )
 }
 
 pub fn delete_custom_food(conn: &Connection, id: i64) -> Result<()> {
@@ -637,4 +726,238 @@ pub fn delete_custom_food(conn: &Connection, id: i64) -> Result<()> {
         return Err(AppError::NotFound(format!("Custom food {id} not found")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nomnom-nanny-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn migration_keeps_existing_foods_and_intake() {
+        let dir = temp_dir("migrate");
+        let db_path = dir.join("nomnom_nanny.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO schema_migrations (version) VALUES (2);
+                CREATE TABLE custom_foods (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    kcal_per_100g REAL NOT NULL DEFAULT 0,
+                    protein_per_100g REAL NOT NULL DEFAULT 0,
+                    fat_per_100g REAL NOT NULL DEFAULT 0,
+                    carbs_per_100g REAL NOT NULL DEFAULT 0,
+                    fiber_per_100g REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO custom_foods (name, kcal_per_100g, protein_per_100g, fat_per_100g, carbs_per_100g, fiber_per_100g)
+                VALUES ('yogurt', 97, 10, 2, 4, 0);
+                CREATE TABLE intake_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    log_date TEXT NOT NULL,
+                    fdc_id INTEGER,
+                    description TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    unit TEXT NOT NULL,
+                    grams REAL,
+                    calories_kcal REAL NOT NULL DEFAULT 0,
+                    protein_g REAL NOT NULL DEFAULT 0,
+                    fat_g REAL NOT NULL DEFAULT 0,
+                    carbs_g REAL NOT NULL DEFAULT 0,
+                    fiber_g REAL NOT NULL DEFAULT 0,
+                    fluid_oz REAL NOT NULL DEFAULT 0,
+                    meal TEXT,
+                    source TEXT NOT NULL DEFAULT 'usda',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO intake_entries (
+                    log_date, description, amount, unit, grams,
+                    calories_kcal, protein_g, fat_g, carbs_g, fiber_g, fluid_oz, source
+                ) VALUES (
+                    '2026-10-01', 'yogurt', 150, 'g', 150,
+                    145.5, 15, 3, 6, 0, 0, 'custom'
+                );
+                CREATE TABLE goals (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    calories_kcal REAL NOT NULL DEFAULT 2000,
+                    protein_g REAL NOT NULL DEFAULT 150,
+                    fat_g REAL NOT NULL DEFAULT 65,
+                    carbs_g REAL NOT NULL DEFAULT 225,
+                    fiber_g REAL NOT NULL DEFAULT 30,
+                    hydration_oz REAL NOT NULL DEFAULT 64,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO goals (id) VALUES (1);
+                "#,
+            )
+            .unwrap();
+        }
+
+        let state = init_db(dir.clone()).unwrap();
+        let conn = state.lock().unwrap();
+        let foods = get_custom_foods(&conn).unwrap();
+        assert_eq!(foods.len(), 1);
+        assert_eq!(foods[0].name, "yogurt");
+        assert_eq!(foods[0].kcal_per_100g, 97.0);
+        assert_eq!(foods[0].basis_unit, "g");
+        assert!(foods[0].density_g_per_ml.is_none());
+
+        let entries = get_entries_for_date(&conn, "2026-10-01").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, "yogurt");
+        assert_eq!(entries[0].amount, 150.0);
+        assert_eq!(entries[0].unit, "g");
+        assert_eq!(entries[0].calories_kcal, 145.5);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_day_returns_foods_with_amounts_and_macros() {
+        let dir = temp_dir("history");
+        let state = init_db(dir.clone()).unwrap();
+        let conn = state.lock().unwrap();
+
+        log_intake(
+            &conn,
+            &LogEntryInput {
+                log_date: "2026-10-03".into(),
+                fdc_id: None,
+                description: "oats".into(),
+                amount: 40.0,
+                unit: "g".into(),
+                grams: Some(40.0),
+                calories_kcal: 150.0,
+                protein_g: 5.0,
+                fat_g: 3.0,
+                carbs_g: 27.0,
+                fiber_g: 4.0,
+                fluid_oz: 0.0,
+                meal: None,
+                source: Some("custom".into()),
+            },
+        )
+        .unwrap();
+        log_intake(
+            &conn,
+            &LogEntryInput {
+                log_date: "2026-10-03".into(),
+                fdc_id: None,
+                description: "milk".into(),
+                amount: 240.0,
+                unit: "ml".into(),
+                grams: Some(247.2),
+                calories_kcal: 120.0,
+                protein_g: 8.0,
+                fat_g: 5.0,
+                carbs_g: 12.0,
+                fiber_g: 0.0,
+                fluid_oz: 0.0,
+                meal: None,
+                source: Some("custom".into()),
+            },
+        )
+        .unwrap();
+        log_intake(
+            &conn,
+            &LogEntryInput {
+                log_date: "2026-10-04".into(),
+                fdc_id: None,
+                description: "apple".into(),
+                amount: 1.0,
+                unit: "g".into(),
+                grams: Some(180.0),
+                calories_kcal: 95.0,
+                protein_g: 0.5,
+                fat_g: 0.3,
+                carbs_g: 25.0,
+                fiber_g: 4.4,
+                fluid_oz: 0.0,
+                meal: None,
+                source: Some("usda".into()),
+            },
+        )
+        .unwrap();
+
+        let summary = get_history_summary(&conn, 14).unwrap();
+        let october_3 = summary.iter().find(|day| day.log_date == "2026-10-03").unwrap();
+        assert_eq!(october_3.calories_kcal, 270.0);
+        assert_eq!(october_3.entry_count, 2);
+
+        let foods = get_entries_for_date(&conn, "2026-10-03").unwrap();
+        assert_eq!(foods.len(), 2);
+        assert_eq!(foods[0].description, "oats");
+        assert_eq!(foods[0].amount, 40.0);
+        assert_eq!(foods[0].unit, "g");
+        assert_eq!(foods[0].protein_g, 5.0);
+        assert_eq!(foods[0].fat_g, 3.0);
+        assert_eq!(foods[0].carbs_g, 27.0);
+        assert_eq!(foods[0].fiber_g, 4.0);
+        assert_eq!(foods[1].description, "milk");
+        assert_eq!(foods[1].amount, 240.0);
+        assert_eq!(foods[1].unit, "ml");
+        assert_eq!(foods[1].calories_kcal, 120.0);
+        assert_eq!(foods[1].carbs_g, 12.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn label_in_milliliters_survives_as_per_100g() {
+        let dir = temp_dir("label");
+        let state = init_db(dir.clone()).unwrap();
+        let conn = state.lock().unwrap();
+        save_custom_food_from_label(
+            &conn,
+            &CustomFoodLabel {
+                name: "olive oil".into(),
+                amount: 15.0,
+                unit: "ml".into(),
+                density_g_per_ml: Some(0.91),
+                kcal: 120.0,
+                protein: 0.0,
+                fat: 14.0,
+                carbs: 0.0,
+                fiber: 0.0,
+            },
+        )
+        .unwrap();
+        let food = get_custom_foods(&conn).unwrap().pop().unwrap();
+        assert_eq!(food.basis_unit, "ml");
+        assert_eq!(food.density_g_per_ml, Some(0.91));
+        let grams = crate::units::grams_for_serving(15.0, "ml", food.density_g_per_ml).unwrap();
+        let scaled = crate::units::macros_for_grams(
+            crate::units::MacroTotals {
+                kcal: food.kcal_per_100g,
+                protein: food.protein_per_100g,
+                fat: food.fat_per_100g,
+                carbs: food.carbs_per_100g,
+                fiber: food.fiber_per_100g,
+            },
+            grams,
+        )
+        .unwrap();
+        assert!((scaled.kcal - 120.0).abs() < 1e-6);
+        assert!((scaled.fat - 14.0).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
