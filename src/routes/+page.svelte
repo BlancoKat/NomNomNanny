@@ -7,7 +7,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import ServingFields from '$lib/components/ServingFields.svelte';
   import { localDateString, rollDisplayedDay } from '$lib/localDate';
-  import { openHistoryDay } from '$lib/historyDay';
+  import { openHistoryDay, selectToday } from '$lib/historyDay';
 
   interface Goal { calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; hydration_oz: number; }
   interface IntakeEntry { id: number; log_date: string; description: string; amount: number; unit: string; calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; fluid_oz: number; meal?: string; source: string; }
@@ -467,6 +467,13 @@
     changeDate(next.date);
   }
 
+  function showToday() {
+    const next = selectToday(localDateString());
+    today = next.date;
+    activeTab = next.tab;
+    changeDate(next.date);
+  }
+
   function syncClock(now = new Date()) {
     const next = rollDisplayedDay(currentDate, today, now);
     const dateChanged = next.currentDate !== currentDate;
@@ -529,7 +536,7 @@
     </div>
 
     <nav class="px-3 py-4 text-sm">
-      <button onclick={() => activeTab='today'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
+      <button type="button" onclick={showToday} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
       <button onclick={() => activeTab='history'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='history' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><History class="w-4 h-4"/> History</button>
       <button onclick={() => activeTab='goals'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl {activeTab==='goals' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Target class="w-4 h-4"/> Goals</button>
     </nav>
