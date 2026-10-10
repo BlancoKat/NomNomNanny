@@ -1,6 +1,6 @@
 {
   "name": "nomnom-nanny",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NomNom Nanny — Daily calorie, nutrient & hydration tracker",
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "node --experimental-strip-types --test node-tests/historyDay.test.ts && for tz in America/Chicago Australia/Sydney Europe/Berlin UTC; do TZ=$tz node --experimental-strip-types --test node-tests/localDate.test.ts || exit 1; done",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

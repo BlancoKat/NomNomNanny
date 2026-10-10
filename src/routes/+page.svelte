@@ -5,6 +5,24 @@
   import MacroRing from '$lib/components/MacroRing.svelte';
   import DateNavigator from '$lib/components/DateNavigator.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import ServingFields from '$lib/components/ServingFields.svelte';
+  import { localDateString, rollDisplayedDay } from '$lib/localDate';
+  import { openHistoryDay, selectToday } from '$lib/historyDay';
+
+  /** Grow a textarea to its text so a long food name stays visible. */
+  function fitFoodName(node: HTMLTextAreaElement) {
+    const fit = () => {
+      node.style.height = 'auto';
+      node.style.height = `${node.scrollHeight}px`;
+    };
+    fit();
+    node.addEventListener('input', fit);
+    return {
+      destroy() {
+        node.removeEventListener('input', fit);
+      },
+    };
+  }
 
   interface Goal { calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; hydration_oz: number; }
   interface IntakeEntry { id: number; log_date: string; description: string; amount: number; unit: string; calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; fluid_oz: number; meal?: string; source: string; }
@@ -15,8 +33,9 @@
   interface MacroNutrients { kcal: number; protein: number; fat: number; carbs: number; fiber: number; }
   interface CachedFood { fdc_id: number; description: string; nutrients_per_100g: MacroNutrients; portions: FoodPortion[]; }
 
-  let today = new Date().toISOString().slice(0, 10);
-  let currentDate = $state(today);
+  const initialDay = localDateString();
+  let today = $state(initialDay);
+  let currentDate = $state(initialDay);
   let activeTab = $state<'today' | 'history' | 'goals'>('today');
 
   let goals = $state<Goal | null>(null);
@@ -27,7 +46,7 @@
 
   let waterOz = $state(8);
   let showCustomForm = $state(false);
-  let custom = $state({ name: 'Greek yogurt', kcal: 100, protein: 10, fat: 2, carbs: 8, fiber: 0 });
+  let custom = $state({ name: 'Greek yogurt', kcal: 100, protein: 10, fat: 2, carbs: 8, fiber: 0, amount: 100, unit: 'g', density: '' });
 
   // Food search
   let showFoodModal = $state(false);
@@ -41,18 +60,19 @@
     fat_per_100g: number;
     carbs_per_100g: number;
     fiber_per_100g: number;
+    basis_unit: string;
+    density_g_per_ml: number | null;
   }
 
   let customFoods = $state<CustomFood[]>([]);
   let showMyFoodsModal = $state(false);
 
-  // Save current manual entry as custom food flow
-  let showSaveCustomDialog = $state(false);
-  let saveCustomGrams = $state(100);
-
-  // Advanced logging from My Foods (pick food + quantity + optional overrides)
+  // Logging from My Foods (amount, unit, optional nutrient override)
   let activeLogFoodId = $state<number | null>(null);
-  let logGrams = $state(100);
+  let logAmount = $state(100);
+  let logUnit = $state('g');
+  let usdaAmount = $state(0);
+  let usdaUnit = $state('g');
   let useNutrientOverride = $state(false);
   let overrideNutrients = $state({ kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 });
   let foodQuery = $state('');
@@ -93,35 +113,41 @@
     customFoods = await invoke('get_custom_foods_cmd');
   }
 
-  async function saveCurrentAsCustomFood() {
-    if (!custom.name.trim()) return;
-    showSaveCustomDialog = true;
-    saveCustomGrams = 100; // sensible default
+  function densityOrNull(text: string): number | null {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const value = Number(trimmed);
+    return Number.isFinite(value) ? value : null;
   }
 
-  async function confirmSaveCurrentAsCustomFood() {
-    if (!custom.name.trim() || saveCustomGrams <= 0) {
-      showSaveCustomDialog = false;
-      return;
+  async function gramsFor(amount: number, unit: string, density: number | null): Promise<number> {
+    return await invoke('grams_for_serving_cmd', {
+      serving: { amount, unit, density_g_per_ml: density }
+    });
+  }
+
+  async function saveCurrentAsCustomFood() {
+    if (!custom.name.trim() || custom.amount <= 0) return;
+    try {
+      await invoke('save_custom_food_from_label_cmd', {
+        label: {
+          name: custom.name.trim(),
+          amount: custom.amount,
+          unit: custom.unit,
+          density_g_per_ml: densityOrNull(custom.density),
+          kcal: custom.kcal,
+          protein: custom.protein,
+          fat: custom.fat,
+          carbs: custom.carbs,
+          fiber: custom.fiber,
+        }
+      });
+      await loadCustomFoods();
+      status = 'Saved to My Foods';
+      setTimeout(() => { if (status === 'Saved to My Foods') status = ''; }, 1500);
+    } catch (e: any) {
+      status = 'Error: ' + (e?.message || e);
     }
-
-    const factor = 100 / saveCustomGrams;
-
-    const food: CustomFood = {
-      id: 0,
-      name: custom.name.trim(),
-      kcal_per_100g: custom.kcal * factor,
-      protein_per_100g: custom.protein * factor,
-      fat_per_100g: custom.fat * factor,
-      carbs_per_100g: custom.carbs * factor,
-      fiber_per_100g: custom.fiber * factor,
-    };
-
-    await invoke('save_custom_food_cmd', { food });
-    await loadCustomFoods();
-    showSaveCustomDialog = false;
-    status = 'Saved to My Foods';
-    setTimeout(() => { if (status === 'Saved to My Foods') status = ''; }, 1500);
   }
 
   async function updateCustomFood(food: CustomFood) {
@@ -134,47 +160,51 @@
     await loadCustomFoods();
   }
 
-  async function logFromCustomFood(food: CustomFood, grams: number) {
-    if (grams <= 0) return;
+  async function logFromCustomFood(food: CustomFood, amount: number, unit: string) {
+    if (amount <= 0) return;
+    try {
+      const grams = await gramsFor(amount, unit, food.density_g_per_ml);
+      const factor = grams / 100;
+      const scaled = {
+        kcal: food.kcal_per_100g * factor,
+        protein: food.protein_per_100g * factor,
+        fat: food.fat_per_100g * factor,
+        carbs: food.carbs_per_100g * factor,
+        fiber: food.fiber_per_100g * factor,
+      };
 
-    const factor = grams / 100;
-    const scaled = {
-      kcal: food.kcal_per_100g * factor,
-      protein: food.protein_per_100g * factor,
-      fat: food.fat_per_100g * factor,
-      carbs: food.carbs_per_100g * factor,
-      fiber: food.fiber_per_100g * factor,
-    };
+      await invoke('log_intake_cmd', {
+        input: {
+          log_date: currentDate,
+          description: food.name,
+          amount,
+          unit,
+          grams,
+          calories_kcal: scaled.kcal,
+          protein_g: scaled.protein,
+          fat_g: scaled.fat,
+          carbs_g: scaled.carbs,
+          fiber_g: scaled.fiber,
+          fluid_oz: 0,
+          meal: 'Snack',
+          source: 'custom'
+        }
+      });
 
-    await invoke('log_intake_cmd', {
-      input: {
-        log_date: currentDate,
-        description: food.name,
-        amount: grams,
-        unit: 'g',
-        grams: grams,
-        calories_kcal: scaled.kcal,
-        protein_g: scaled.protein,
-        fat_g: scaled.fat,
-        carbs_g: scaled.carbs,
-        fiber_g: scaled.fiber,
-        fluid_oz: 0,
-        meal: 'Snack',
-        source: 'custom'
-      }
-    });
-
-    await loadAll();
-    status = `Logged ${grams}g of ${food.name}`;
-    setTimeout(() => { if (status.startsWith('Logged')) status = ''; }, 1500);
+      await loadAll();
+      status = `Logged ${amount} ${unit} of ${food.name}`;
+      setTimeout(() => { if (status.startsWith('Logged')) status = ''; }, 1500);
+    } catch (e: any) {
+      status = 'Error: ' + (e?.message || e);
+    }
   }
 
   function startLoggingFood(food: CustomFood) {
     activeLogFoodId = food.id;
-    logGrams = 100;
+    logAmount = 100;
+    logUnit = food.basis_unit || 'g';
     useNutrientOverride = false;
 
-    // Pre-fill overrides with calculated values for 100g
     const factor = 100 / 100;
     overrideNutrients = {
       kcal: food.kcal_per_100g * factor,
@@ -186,60 +216,77 @@
   }
 
   async function confirmLogFromMyFoods(food: CustomFood) {
-    const g = logGrams;
-    if (g <= 0) return;
+    if (logAmount <= 0) return;
+    try {
+      const grams = await gramsFor(logAmount, logUnit, food.density_g_per_ml);
+      let finalValues;
 
-    let finalValues;
-
-    if (useNutrientOverride) {
-      // Use the overridden values as totals for the entered grams
-      finalValues = { ...overrideNutrients };
-    } else {
-      // Scale from the saved per-100g profile
-      const factor = g / 100;
-      finalValues = {
-        kcal: food.kcal_per_100g * factor,
-        protein: food.protein_per_100g * factor,
-        fat: food.fat_per_100g * factor,
-        carbs: food.carbs_per_100g * factor,
-        fiber: food.fiber_per_100g * factor,
-      };
-    }
-
-    await invoke('log_intake_cmd', {
-      input: {
-        log_date: currentDate,
-        description: food.name,
-        amount: g,
-        unit: 'g',
-        grams: g,
-        calories_kcal: finalValues.kcal,
-        protein_g: finalValues.protein,
-        fat_g: finalValues.fat,
-        carbs_g: finalValues.carbs,
-        fiber_g: finalValues.fiber,
-        fluid_oz: 0,
-        meal: 'Snack',
-        source: 'custom'
+      if (useNutrientOverride) {
+        finalValues = { ...overrideNutrients };
+      } else {
+        const factor = grams / 100;
+        finalValues = {
+          kcal: food.kcal_per_100g * factor,
+          protein: food.protein_per_100g * factor,
+          fat: food.fat_per_100g * factor,
+          carbs: food.carbs_per_100g * factor,
+          fiber: food.fiber_per_100g * factor,
+        };
       }
-    });
 
-    await loadAll();
-    activeLogFoodId = null;
-    status = `Logged ${g}g of ${food.name}`;
-    setTimeout(() => { if (status.startsWith('Logged')) status = ''; }, 1500);
+      await invoke('log_intake_cmd', {
+        input: {
+          log_date: currentDate,
+          description: food.name,
+          amount: logAmount,
+          unit: logUnit,
+          grams,
+          calories_kcal: finalValues.kcal,
+          protein_g: finalValues.protein,
+          fat_g: finalValues.fat,
+          carbs_g: finalValues.carbs,
+          fiber_g: finalValues.fiber,
+          fluid_oz: 0,
+          meal: 'Snack',
+          source: 'custom'
+        }
+      });
+
+      await loadAll();
+      activeLogFoodId = null;
+      status = `Logged ${logAmount} ${logUnit} of ${food.name}`;
+      setTimeout(() => { if (status.startsWith('Logged')) status = ''; }, 1500);
+    } catch (e: any) {
+      status = 'Error: ' + (e?.message || e);
+    }
   }
 
+  let loadGeneration = 0;
+
   async function loadAll() {
+    const date = currentDate;
+    const generation = ++loadGeneration;
     isLoading = true;
     try {
-      goals = await invoke('get_goals_cmd');
-      entries = await invoke('get_entries_for_date_cmd', { date: currentDate });
-      totals = await invoke('get_daily_totals_cmd', { date: currentDate });
-      averages7 = await invoke('get_averages_cmd', { days: 7 });
-      history = await invoke('get_history_summary_cmd', { limit: 14 });
-    } catch (e: any) { status = 'Error: ' + (e?.message || e); }
-    finally { isLoading = false; }
+      const [nextGoals, nextEntries, nextTotals, nextAverages, nextHistory] = await Promise.all([
+        invoke('get_goals_cmd'),
+        invoke('get_entries_for_date_cmd', { date }),
+        invoke('get_daily_totals_cmd', { date }),
+        invoke('get_averages_cmd', { days: 7 }),
+        invoke('get_history_summary_cmd', { limit: 14 }),
+      ]);
+      if (generation !== loadGeneration) return;
+      goals = nextGoals as Goal;
+      entries = nextEntries as IntakeEntry[];
+      totals = nextTotals as DailyTotals;
+      averages7 = nextAverages;
+      history = nextHistory as any[];
+    } catch (e: any) {
+      if (generation === loadGeneration) status = 'Error: ' + (e?.message || e);
+    }
+    finally {
+      if (generation === loadGeneration) isLoading = false;
+    }
   }
 
   async function logWater() {
@@ -249,9 +296,15 @@
   }
 
   async function logCustomEntry() {
-    await invoke('log_intake_cmd', { input: { log_date: currentDate, description: custom.name, amount: 1, unit: 'serving', grams: 100, calories_kcal: custom.kcal, protein_g: custom.protein, fat_g: custom.fat, carbs_g: custom.carbs, fiber_g: custom.fiber, fluid_oz: 0, meal: 'Snack', source: 'custom' } });
-    showCustomForm = false;
-    await loadAll();
+    if (!custom.name.trim() || custom.amount <= 0) return;
+    try {
+      const grams = await gramsFor(custom.amount, custom.unit, densityOrNull(custom.density));
+      await invoke('log_intake_cmd', { input: { log_date: currentDate, description: custom.name, amount: custom.amount, unit: custom.unit, grams, calories_kcal: custom.kcal, protein_g: custom.protein, fat_g: custom.fat, carbs_g: custom.carbs, fiber_g: custom.fiber, fluid_oz: 0, meal: 'Snack', source: 'custom' } });
+      showCustomForm = false;
+      await loadAll();
+    } catch (e: any) {
+      status = 'Error: ' + (e?.message || e);
+    }
   }
 
   async function deleteEntry(id: number) { await invoke('delete_entry_cmd', { id }); await loadAll(); }
@@ -309,6 +362,8 @@
       selectedFood = await invoke('fetch_usda_food_details_cmd', { fdcId: hit.fdc_id, apiKey: key });
       selectedPortionIndex = 0; 
       portionMultiplier = 1;
+      usdaAmount = 0;
+      usdaUnit = 'g';
     } catch (e: any) {
       const msg = e?.message || String(e) || 'Unknown error';
       searchError = `Failed to load food details: ${msg}`;
@@ -329,23 +384,33 @@
       return;
     }
 
-    const p = selectedFood.portions[selectedPortionIndex];
-    const g = (p.grams > 0 ? p.grams : 100) * portionMultiplier;
+    const food = selectedFood;
+    const p = food.portions[selectedPortionIndex];
+    const typedAmount = usdaAmount;
+    const typedUnit = usdaUnit;
+    const portionGrams = (p?.grams > 0 ? p.grams : 100) * portionMultiplier;
 
     previewLoading = true;
-    invoke('scale_nutrients_cmd', {
-      nutrients: selectedFood.nutrients_per_100g,
+    let cancelled = false;
+    const gramsPromise = typedAmount > 0
+      ? gramsFor(typedAmount, typedUnit, null)
+      : Promise.resolve(portionGrams);
+    gramsPromise.then((g) => invoke('scale_nutrients_cmd', {
+      nutrients: food.nutrients_per_100g,
       grams: g
-    })
+    }))
       .then((res: any) => {
-        previewNutrients = res;
+        if (!cancelled) previewNutrients = res;
       })
       .catch(() => {
-        previewNutrients = null;
+        if (!cancelled) previewNutrients = null;
       })
       .finally(() => {
-        previewLoading = false;
+        if (!cancelled) previewLoading = false;
       });
+    return () => {
+      cancelled = true;
+    };
   });
 
   let logging = $state(false);
@@ -357,7 +422,10 @@
 
     try {
       const p = selectedFood.portions[selectedPortionIndex];
-      const g = (p.grams > 0 ? p.grams : 100) * portionMultiplier;
+      const typed = usdaAmount > 0;
+      const g = typed
+        ? await gramsFor(usdaAmount, usdaUnit, null)
+        : (p.grams > 0 ? p.grams : 100) * portionMultiplier;
 
       const scaled: MacroNutrients = await invoke('scale_nutrients_cmd', {
         nutrients: selectedFood.nutrients_per_100g,
@@ -369,8 +437,8 @@
           log_date: currentDate,
           fdc_id: selectedFood.fdc_id,
           description: selectedFood.description,
-          amount: portionMultiplier,
-          unit: p.label,
+          amount: typed ? usdaAmount : portionMultiplier,
+          unit: typed ? usdaUnit : p.label,
           grams: g,
           calories_kcal: scaled.kcal,
           protein_g: scaled.protein,
@@ -400,11 +468,33 @@
     searchError = '';
     selectedFood = null; 
     portionMultiplier = 1; 
+    usdaAmount = 0;
+    usdaUnit = 'g';
     detailLoading = false;
   }
   function openFoodSearch() { showFoodModal = true; setTimeout(() => (document.getElementById('food-search-input') as HTMLInputElement)?.focus(), 60); }
 
   function changeDate(d: string) { currentDate = d; loadAll(); }
+
+  function showHistoryDay(logDate: string) {
+    const next = openHistoryDay(logDate);
+    activeTab = next.tab;
+    changeDate(next.date);
+  }
+
+  function showToday() {
+    const next = selectToday(localDateString());
+    today = next.date;
+    activeTab = next.tab;
+    changeDate(next.date);
+  }
+
+  function syncClock(now = new Date()) {
+    const next = rollDisplayedDay(currentDate, today, now);
+    const dateChanged = next.currentDate !== currentDate;
+    today = next.today;
+    if (dateChanged) changeDate(next.currentDate);
+  }
 
   const progress = $derived(goals && totals ? {
     kcal: { cur: totals.calories_kcal, goal: goals.calories_kcal, unit: 'kcal', color: '#10b981' },
@@ -419,6 +509,21 @@
     initStore();
     loadAll();
     loadCustomFoods();
+  });
+
+  $effect(() => {
+    const timer = setInterval(() => syncClock(), 30_000);
+    const onFocus = () => syncClock();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncClock();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   });
 
   function handleKey(e: KeyboardEvent) {
@@ -446,7 +551,7 @@
     </div>
 
     <nav class="px-3 py-4 text-sm">
-      <button onclick={() => activeTab='today'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
+      <button type="button" onclick={showToday} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='today' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Calendar class="w-4 h-4"/> Today</button>
       <button onclick={() => activeTab='history'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl mb-1 {activeTab==='history' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><History class="w-4 h-4"/> History</button>
       <button onclick={() => activeTab='goals'} class="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl {activeTab==='goals' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'hover:bg-slate-100 text-slate-600'}"><Target class="w-4 h-4"/> Goals</button>
     </nav>
@@ -456,9 +561,9 @@
 
   <!-- Main -->
   <div class="flex-1 flex flex-col overflow-hidden">
-    <div class="h-14 border-b bg-white flex items-center px-6 justify-between shrink-0">
-      <div>
-        {#if activeTab === 'today'}<DateNavigator date={currentDate} onChange={changeDate} />{/if}
+    <div class="h-14 border-b bg-white flex items-center px-6 justify-between shrink-0 min-w-0 gap-3">
+      <div class="min-w-0 flex-1">
+        {#if activeTab === 'today'}<DateNavigator date={currentDate} today={today} onChange={changeDate} />{/if}
         {#if activeTab === 'history'}<div class="font-semibold text-xl">History (last 14 days)</div>{/if}
         {#if activeTab === 'goals'}<div class="font-semibold text-xl">Your Daily Goals</div>{/if}
       </div>
@@ -499,8 +604,9 @@
           {#if showCustomForm}
             <div class="mt-4 p-4 bg-slate-50 rounded-2xl space-y-3 text-sm">
               <div class="text-xs text-slate-500">
-                Use this for homemade foods or items not in the USDA database. Enter the <strong>total</strong> values for the entire amount you're logging.
+                Use this for homemade foods or items not in the USDA database. Enter the <strong>total</strong> nutrients for the amount below. mL and fl oz use a density of 1 g/mL unless you set one (oil is about 0.91, milk about 1.03).
               </div>
+              <ServingFields bind:amount={custom.amount} bind:unit={custom.unit} bind:density={custom.density} />
 
               <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
                 <!-- Name -->
@@ -550,7 +656,7 @@
 
         <div class="bg-white border rounded-3xl overflow-hidden">
           <div class="px-5 py-3 border-b bg-slate-50/60 font-semibold flex justify-between">
-            <div>Today's log ({entries.length})</div>
+            <div>{currentDate === today ? "Today's log" : `Log for ${currentDate}`} ({entries.length})</div>
             {#if averages7}<div class="text-xs text-slate-500">7-day avg: {averages7.calories_kcal.toFixed(0)} kcal</div>{/if}
           </div>
           {#if entries.length === 0}
@@ -558,11 +664,15 @@
           {:else}
             <div class="divide-y text-sm">
               {#each entries as e (e.id)}
-                <div class="px-5 py-3 flex justify-between group hover:bg-slate-50">
-                  <div><span class="font-medium">{e.description}</span> <span class="text-slate-400">({e.amount} {e.unit})</span></div>
-                  <div class="flex items-center gap-4 text-xs tabular-nums">
+                <div class="px-5 py-3 flex justify-between gap-3 group hover:bg-slate-50">
+                  <div class="min-w-0 break-words"><span class="font-medium whitespace-pre-wrap">{e.description}</span> <span class="text-slate-400 whitespace-nowrap">({e.amount} {e.unit})</span></div>
+                  <div class="flex items-center gap-3 text-xs tabular-nums shrink-0">
                     <span class="text-emerald-600">{e.calories_kcal.toFixed(0)} kcal</span>
-                    <span class="text-sky-600">{e.fluid_oz.toFixed(1)} oz</span>
+                    <span>{e.protein_g.toFixed(1)}p</span>
+                    <span>{e.fat_g.toFixed(1)}f</span>
+                    <span>{e.carbs_g.toFixed(1)}c</span>
+                    <span>{e.fiber_g.toFixed(1)} fib</span>
+                    {#if e.fluid_oz > 0}<span class="text-sky-600">{e.fluid_oz.toFixed(1)} oz</span>{/if}
                     <button onclick={() => deleteEntry(e.id)} class="opacity-0 group-hover:opacity-100 text-rose-500"><Trash2 class="w-4 h-4"/></button>
                   </div>
                 </div>
@@ -575,11 +685,12 @@
 
     {#if activeTab === 'history'}
       <div class="p-6 overflow-auto">
+        <p class="text-sm text-slate-500 mb-3">Open a day to see the foods, amounts, and macros.</p>
         <div class="bg-white border rounded-3xl overflow-hidden">
           <table class="w-full text-sm">
             <thead class="bg-slate-50 text-slate-500"><tr><th class="text-left px-5 py-3">Date</th><th>Calories</th><th>Protein</th><th>Water</th><th>Items</th></tr></thead>
             <tbody class="divide-y">
-              {#each history as d}<tr class="hover:bg-emerald-50 cursor-pointer" onclick={()=>{currentDate=d.log_date; activeTab='today';}}>
+              {#each history as d}<tr class="hover:bg-emerald-50 cursor-pointer" onclick={() => showHistoryDay(d.log_date)}>
                 <td class="px-5 py-3 font-medium">{d.log_date}</td>
                 <td class="text-center tabular-nums">{d.calories_kcal.toFixed(0)}</td>
                 <td class="text-center tabular-nums">{d.protein_g.toFixed(1)}g</td>
@@ -706,6 +817,11 @@
           </div>
         </div>
 
+        <div>
+          <div class="text-xs text-slate-500 mb-1">Or type an amount. Leave it at 0 to use the serving above. mL and fl oz use 1 g/mL.</div>
+          <ServingFields bind:amount={usdaAmount} bind:unit={usdaUnit} showDensity={false} />
+        </div>
+
         {#if previewLoading}
           <div class="p-3 bg-white border rounded-2xl text-sm text-slate-500 text-center">
             Calculating...
@@ -743,14 +859,23 @@
     {:else}
       {#each customFoods as food (food.id)}
         <div class="border rounded-2xl p-3">
-          <!-- Header -->
-          <div class="flex justify-between items-start mb-2">
-            <input 
-              bind:value={food.name} 
-              class="font-medium border-b border-transparent focus:border-emerald-300 px-1 py-0.5 w-48"
-              onblur={() => updateCustomFood(food)}
-            />
-            <div class="flex gap-2">
+          <textarea
+            use:fitFoodName
+            bind:value={food.name}
+            rows="2"
+            aria-label="Food name"
+            class="w-full font-medium border border-slate-200 focus:border-emerald-400 rounded-xl px-3 py-2 mb-2 resize-none overflow-hidden break-words leading-snug min-h-16"
+            onblur={() => updateCustomFood(food)}
+          ></textarea>
+          <div class="flex justify-between items-start gap-3 mb-2">
+            <div class="text-[10px] text-slate-400 min-w-0 break-words">
+              {#if food.basis_unit && food.basis_unit !== 'g'}
+                Saved from a {food.basis_unit} label{food.density_g_per_ml ? `, ${food.density_g_per_ml} g/mL` : ', 1 g/mL'}. Nutrients below are per 100 g.
+              {:else}
+                Nutrients below are per 100 g.
+              {/if}
+            </div>
+            <div class="flex gap-2 shrink-0">
               <button onclick={() => startLoggingFood(food)} 
                       class="text-xs px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700">
                 Log this food
@@ -796,13 +921,10 @@
           <!-- Advanced logging UI -->
           {#if activeLogFoodId === food.id}
             <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
-              <div class="text-sm font-medium mb-2">Log {food.name}</div>
+              <div class="text-sm font-medium mb-2 break-words whitespace-pre-wrap">Log {food.name}</div>
 
-              <div class="flex gap-3 items-end mb-3">
-                <div>
-                  <div class="text-[10px] text-slate-500">Grams</div>
-                  <input type="number" bind:value={logGrams} step="1" class="w-24 border rounded px-2 py-1 text-sm" />
-                </div>
+              <div class="flex gap-3 items-end mb-3 flex-wrap">
+                <ServingFields bind:amount={logAmount} bind:unit={logUnit} showDensity={false} />
                 <button onclick={() => confirmLogFromMyFoods(food)} 
                         class="px-4 py-1.5 bg-emerald-600 text-white text-sm rounded-xl">
                   Log this
@@ -817,7 +939,7 @@
                 </label>
 
                 {#if !useNutrientOverride}
-                  <div class="text-slate-500">Using saved per-100g values × {logGrams}g</div>
+                  <div class="text-slate-500">Scaled from the saved per-100g values. {logUnit === 'ml' || logUnit === 'fl oz' ? `Volume uses ${food.density_g_per_ml ?? 1} g/mL.` : ''}</div>
                 {:else}
                   <div class="grid grid-cols-5 gap-1 text-[10px] mt-1">
                     <div><span class="text-slate-500">kcal</span><br>
@@ -840,9 +962,9 @@
                       class="text-xs px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700">
                 Log with custom quantity + overrides
               </button>
-              <button onclick={() => logFromCustomFood(food, 100)} 
+              <button onclick={() => logFromCustomFood(food, 100, food.basis_unit || 'g')} 
                       class="text-xs px-3 py-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200">
-                Quick log 100g
+                Quick log 100 {food.basis_unit === 'ml' ? 'mL' : (food.basis_unit || 'g')}
               </button>
             </div>
           {/if}
@@ -858,29 +980,5 @@
       </button>
     </div>
 
-    <!-- Small dialog for saving with grams info -->
-    {#if showSaveCustomDialog}
-      <div class="mt-4 p-4 border border-emerald-200 bg-emerald-50 rounded-2xl">
-        <div class="text-sm font-medium mb-2">Save as Custom Food</div>
-        <div class="text-xs text-slate-600 mb-3">
-          You entered totals for a certain amount. How many grams was that entry?
-        </div>
-        <div class="flex gap-2 items-end">
-          <div>
-            <div class="text-[10px] text-slate-500">Grams this entry represented</div>
-            <input 
-              type="number" 
-              bind:value={saveCustomGrams} 
-              class="w-28 border rounded-xl px-3 py-1.5 text-sm" 
-            />
-          </div>
-          <button onclick={confirmSaveCurrentAsCustomFood} class="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm">Save</button>
-          <button onclick={() => showSaveCustomDialog = false} class="px-4 py-2 text-slate-600">Cancel</button>
-        </div>
-        <div class="text-[10px] text-slate-500 mt-2">
-          The app will convert your totals into per-100g values for future scaling.
-        </div>
-      </div>
-    {/if}
   </div>
 </Modal>

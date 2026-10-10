@@ -2,6 +2,7 @@
 mod appimage_runtime;
 mod db;
 mod error;
+mod units;
 mod usda;
 
 use db::{
@@ -127,6 +128,20 @@ async fn save_custom_food_cmd(
 }
 
 #[tauri::command]
+async fn save_custom_food_from_label_cmd(
+    state: State<'_, DbState>,
+    label: db::CustomFoodLabel,
+) -> Result<i64, AppError> {
+    let conn = state.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    db::save_custom_food_from_label(&conn, &label)
+}
+
+#[tauri::command]
+fn grams_for_serving_cmd(serving: units::ServingAmount) -> Result<f64, AppError> {
+    units::grams_for_serving(serving.amount, &serving.unit, serving.density_g_per_ml)
+}
+
+#[tauri::command]
 async fn delete_custom_food_cmd(state: State<'_, DbState>, id: i64) -> Result<(), AppError> {
     let conn = state.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     db::delete_custom_food(&conn, id)
@@ -176,6 +191,8 @@ pub fn run() {
             // Custom Foods
             get_custom_foods_cmd,
             save_custom_food_cmd,
+            save_custom_food_from_label_cmd,
+            grams_for_serving_cmd,
             delete_custom_food_cmd
         ])
         .run(tauri::generate_context!())
