@@ -9,6 +9,21 @@
   import { localDateString, rollDisplayedDay } from '$lib/localDate';
   import { openHistoryDay, selectToday } from '$lib/historyDay';
 
+  /** Grow a textarea to its text so a long food name stays visible. */
+  function fitFoodName(node: HTMLTextAreaElement) {
+    const fit = () => {
+      node.style.height = 'auto';
+      node.style.height = `${node.scrollHeight}px`;
+    };
+    fit();
+    node.addEventListener('input', fit);
+    return {
+      destroy() {
+        node.removeEventListener('input', fit);
+      },
+    };
+  }
+
   interface Goal { calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; hydration_oz: number; }
   interface IntakeEntry { id: number; log_date: string; description: string; amount: number; unit: string; calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; fluid_oz: number; meal?: string; source: string; }
   interface DailyTotals { log_date: string; calories_kcal: number; protein_g: number; fat_g: number; carbs_g: number; fiber_g: number; fluid_oz: number; entry_count: number; }
@@ -650,7 +665,7 @@
             <div class="divide-y text-sm">
               {#each entries as e (e.id)}
                 <div class="px-5 py-3 flex justify-between gap-3 group hover:bg-slate-50">
-                  <div class="min-w-0"><span class="font-medium">{e.description}</span> <span class="text-slate-400">({e.amount} {e.unit})</span></div>
+                  <div class="min-w-0 break-words"><span class="font-medium whitespace-pre-wrap">{e.description}</span> <span class="text-slate-400 whitespace-nowrap">({e.amount} {e.unit})</span></div>
                   <div class="flex items-center gap-3 text-xs tabular-nums shrink-0">
                     <span class="text-emerald-600">{e.calories_kcal.toFixed(0)} kcal</span>
                     <span>{e.protein_g.toFixed(1)}p</span>
@@ -844,21 +859,23 @@
     {:else}
       {#each customFoods as food (food.id)}
         <div class="border rounded-2xl p-3">
-          <!-- Header -->
-          <div class="flex justify-between items-start mb-2">
-            <input 
-              bind:value={food.name} 
-              class="font-medium border-b border-transparent focus:border-emerald-300 px-1 py-0.5 w-48"
-              onblur={() => updateCustomFood(food)}
-            />
-            <div class="text-[10px] text-slate-400">
+          <textarea
+            use:fitFoodName
+            bind:value={food.name}
+            rows="2"
+            aria-label="Food name"
+            class="w-full font-medium border border-slate-200 focus:border-emerald-400 rounded-xl px-3 py-2 mb-2 resize-none overflow-hidden break-words leading-snug min-h-16"
+            onblur={() => updateCustomFood(food)}
+          ></textarea>
+          <div class="flex justify-between items-start gap-3 mb-2">
+            <div class="text-[10px] text-slate-400 min-w-0 break-words">
               {#if food.basis_unit && food.basis_unit !== 'g'}
                 Saved from a {food.basis_unit} label{food.density_g_per_ml ? `, ${food.density_g_per_ml} g/mL` : ', 1 g/mL'}. Nutrients below are per 100 g.
               {:else}
                 Nutrients below are per 100 g.
               {/if}
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 shrink-0">
               <button onclick={() => startLoggingFood(food)} 
                       class="text-xs px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700">
                 Log this food
@@ -904,7 +921,7 @@
           <!-- Advanced logging UI -->
           {#if activeLogFoodId === food.id}
             <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
-              <div class="text-sm font-medium mb-2">Log {food.name}</div>
+              <div class="text-sm font-medium mb-2 break-words whitespace-pre-wrap">Log {food.name}</div>
 
               <div class="flex gap-3 items-end mb-3 flex-wrap">
                 <ServingFields bind:amount={logAmount} bind:unit={logUnit} showDensity={false} />

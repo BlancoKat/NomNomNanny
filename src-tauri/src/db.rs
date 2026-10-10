@@ -960,4 +960,61 @@ mod tests {
         assert!((scaled.fat - 14.0).abs() < 1e-6);
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn long_food_name_is_stored_in_full() {
+        let dir = temp_dir("long-name");
+        let state = init_db(dir.clone()).unwrap();
+        let conn = state.lock().unwrap();
+        let specific = "homemade chicken salad with Greek yogurt, celery, red grapes, toasted almonds, and a little Dijon, packed in a glass container for lunch";
+        let name = specific.repeat(3);
+        assert!(name.len() > 255, "the sample should be longer than a typical short cap");
+        save_custom_food_from_label(
+            &conn,
+            &CustomFoodLabel {
+                name: name.clone(),
+                amount: 100.0,
+                unit: "g".into(),
+                density_g_per_ml: None,
+                kcal: 180.0,
+                protein: 12.0,
+                fat: 8.0,
+                carbs: 10.0,
+                fiber: 2.0,
+            },
+        )
+        .unwrap();
+        let mut food = get_custom_foods(&conn).unwrap().pop().unwrap();
+        assert_eq!(food.name, name);
+
+        let renamed = format!("{name} — extra note about the lemon dressing");
+        food.name = renamed.clone();
+        save_custom_food(&conn, &food).unwrap();
+        let stored = get_custom_foods(&conn).unwrap().pop().unwrap();
+        assert_eq!(stored.name, renamed);
+
+        log_intake(
+            &conn,
+            &LogEntryInput {
+                log_date: "2026-10-10".into(),
+                fdc_id: None,
+                description: renamed.clone(),
+                amount: 100.0,
+                unit: "g".into(),
+                grams: Some(100.0),
+                calories_kcal: 180.0,
+                protein_g: 12.0,
+                fat_g: 8.0,
+                carbs_g: 10.0,
+                fiber_g: 2.0,
+                fluid_oz: 0.0,
+                meal: Some("Lunch".into()),
+                source: Some("custom".into()),
+            },
+        )
+        .unwrap();
+        let logged = get_entries_for_date(&conn, "2026-10-10").unwrap();
+        assert_eq!(logged[0].description, renamed);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
